@@ -3,95 +3,106 @@
            (java.util NoSuchElementException)))
 
 
-(defprotocol TryMonad
+(declare success failure)
 
-  (+? [this] "Does the try represent a successful execution?")
+(defprotocol Try
 
-  (-? [this] "Does the try represent a failed execution?")
+  (value? [this] "Does the try represent a successful execution?")
 
-  (+filter [this pred] "Filter on the success value.")
+  (err? [this] "Does the try represent a failed execution?")
 
-  (-filter [this pred] "Filter on the exception.")
+  (filter+ [this pred] "Filter on the success value.")
 
-  (+fmap [this f] "Flatmap against the success value.")
+  (filter- [this pred] "Filter on the exception.")
 
-  (+map [this f] "Map against the success value.")
+  (fmap+ [this f] "Flatmap against the success value.")
 
-  (-fmap [this f] "Flatmap against the exception.")
+  (fmap- [this f] "Flatmap against the exception.")
 
-  (-map [this f] "Map against the exception."))
+  (map+ [this f] "Map against the success value.")
 
+  (map- [this f] "Map against the exception."))
 
-(defrecord Try [value exception]
-
-  TryMonad
-
-  (+? [_] (nil? exception))
-
-  (-? [_] (some? exception))
-
-  (+filter [_ pred]
-    (if (pred value)
-      _ (map->Try {:exception (NoSuchElementException.)})))
-
-  (-filter [_ pred]
-    (if (pred exception)
-      _ (map->Try {:exception (NoSuchElementException.)})))
-
-  (+fmap [_ f]
-    (if (+? _)
-      (try
-        (f value)
-        (catch Exception e
-          (map->Try {:exception e}))) _))
-
-  (+map [_ f]
-    (if (+? _)
-      (try
-        (map->Try {:value (f value)})
-        (catch Exception e
-          (map->Try {:exception e}))) _))
-
-  (-fmap [_ f]
-    (if (-? _)
-      (try
-        (f exception)
-        (catch Exception e
-          (map->Try {:exception e}))) _))
-
-  (-map [_ f]
-    (if (-? _)
-      (try
-        (map->Try {:value (f exception)})
-        (catch Exception e
-          (map->Try {:exception e}))) _))
+(defrecord Success [value]
 
   IDeref
-  (deref [_]
-    (if (+? _) value (throw exception))))
+  (deref [_] value)
+
+  Try
+
+  (value? [_] true)
+  (err? [_] false)
+  (filter- [this _] this)
+  (fmap- [this _] this)
+  (map- [this _] this)
+
+  (filter+ [this pred]
+    (if (pred value) this
+      (failure (NoSuchElementException.))))
+
+  (fmap+ [_ f]
+    (try
+      (f value)
+      (catch Exception e
+        (failure e))))
+
+  (map+ [_ f]
+    (try
+      (success (f value))
+      (catch Exception e
+        (failure e)))))
+
+(defrecord Failure [exception]
+
+  IDeref
+  (deref [_] (throw exception))
+
+  Try
+
+  (value? [_] false)
+  (err? [_] true)
+  (filter+ [this _] this)
+  (fmap+ [this _] this)
+  (map+ [this _] this)
+
+  (filter- [this pred]
+    (if (pred exception) this
+     (failure (NoSuchElementException.))))
+
+  (fmap- [this f]
+    (try
+      (f exception)
+      (catch Exception e
+        (failure e))))
+
+  (map- [this f]
+    (try
+      (success (f exception))
+      (catch Exception e
+        (failure e)))))
 
 (prefer-method print-method IRecord IDeref)
 
 (prefer-method print-method IPersistentMap IDeref)
 
+(defn success [v] (->Success v))
+
+(defn failure [e] (->Failure e))
+
 (defmacro try* [& body]
   `(try
-     (map->Try {:value ~@body})
+     (success ~@body)
      (catch Exception e#
-       (map->Try {:exception e#}))))
+       (failure e#))))
 
-(defn success* [v] (map->Try {:value v}))
-
-(defn failure* [v] (map->Try {:exception v}))
-
-(defmacro bind* [& body]
+(defmacro bind [& body]
   `(try
      (let [value# ~@body]
-       (if-not (instance? Try value#)
-         (map->Try {:value value#})
+       (if-not (satisfies? Try value#)
+         (success value#)
          value#))
      (catch Exception e#
-       (map->Try {:exception e#}))))
+       (failure e#))))
 
 (defmacro try->
   "Like some-> but for try monads."
@@ -100,9 +111,9 @@
         steps
         (map
           (fn [step]
-            `(let [result# (bind* ~g)]
-               (+fmap result# #(bind* (-> % ~step))))) forms)]
-    `(let [~g (bind* ~expr) ~@(interleave (repeat g) (butlast steps))]
+            `(let [result# (bind ~g)]
+               (fmap+ result# #(bind (-> % ~step))))) forms)]
+    `(let [~g (bind ~expr) ~@(interleave (repeat g) (butlast steps))]
        ~(if (empty? steps) g (last steps)))))
 
 (defmacro try->>
@@ -112,7 +123,7 @@
         steps
         (map
           (fn [step]
-            `(let [result# (bind* ~g)]
-               (+fmap result# #(bind* (->> % ~step))))) forms)]
-    `(let [~g (bind* ~expr) ~@(interleave (repeat g) (butlast steps))]
+            `(let [result# (bind ~g)]
+               (fmap+ result# #(bind (->> % ~step))))) forms)]
+    `(let [~g (bind ~expr) ~@(interleave (repeat g) (butlast steps))]
        ~(if (empty? steps) g (last steps)))))
