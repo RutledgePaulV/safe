@@ -25,7 +25,7 @@
 (defrecord Try [value exception]
 
   TryMonad
-  
+
   (+? [_] (nil? exception))
 
   (-? [_] (some? exception))
